@@ -9,42 +9,57 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # ── 環境変数 ──────────────────────────────────────────────
-SLACK_BOT_TOKEN    = os.environ["SLACK_BOT_TOKEN"]
+SLACK_BOT_TOKEN      = os.environ["SLACK_BOT_TOKEN"]
 SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
-X_API_KEY          = os.environ["X_API_KEY"]
-X_API_SECRET       = os.environ["X_API_SECRET"]
-X_ACCESS_TOKEN     = os.environ["X_ACCESS_TOKEN"]
-X_ACCESS_SECRET    = os.environ["X_ACCESS_SECRET"]
+X_API_KEY            = os.environ["X_API_KEY"]
+X_API_SECRET         = os.environ["X_API_SECRET"]
+X_ACCESS_TOKEN       = os.environ["X_ACCESS_TOKEN"]
+X_ACCESS_SECRET      = os.environ["X_ACCESS_SECRET"]
+THREADS_ACCESS_TOKEN = os.environ["THREADS_ACCESS_TOKEN"]
+
+# ── Threads トピック設定 ──────────────────────────────────
+THREADS_TOPIC = "JOB_SEARCH"  # 転職活動
 
 # ── Slack署名検証 ─────────────────────────────────────────
-#def verify_slack_signature(request) -> bool:
-#    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-#    if not timestamp:
-#        return False
-#    if abs(time.time() - int(timestamp)) > 60 * 5:
-#        return False
-#    sig_basestring = f"v0:{timestamp}:{request.get_data(as_text=True)}"
-#    my_signature = "v0=" + hmac.new(
-#        SLACK_SIGNING_SECRET.encode(),
-#        sig_basestring.encode(),
-#        hashlib.sha256
-#    ).hexdigest()
-#    slack_signature = request.headers.get("X-Slack-Signature", "")
-#    return hmac.compare_digest(my_signature, slack_signature)
-
 def verify_slack_signature(request) -> bool:
-    return True  # 一時的にスキップ
+    return True  # 開発中はスキップ
 
-# ── X API: OAuth1.0aで投稿 ────────────────────────────────
-def post_to_x(text: str) -> dict:
+# ── X API: 投稿 ───────────────────────────────────────────
+def post_to_x(text: str) -> str:
     from requests_oauthlib import OAuth1
     url = "https://api.twitter.com/2/tweets"
     auth = OAuth1(X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET)
     r = requests.post(url, json={"text": text}, auth=auth)
     r.raise_for_status()
-    return r.json()
+    tweet_id = r.json()["data"]["id"]
+    return f"https://x.com/Y0shiCareer/status/{tweet_id}"
 
-# ── Slackにメッセージ送信 ─────────────────────────────────
+# ── Threads API: 投稿 ─────────────────────────────────────
+def post_to_threads(text: str) -> str:
+    # Step1: メディアコンテナ作成
+    url1 = "https://graph.threads.net/v1.0/me/threads"
+    params1 = {
+        "media_type": "TEXT",
+        "text": text,
+        "topic_tag": THREADS_TOPIC,
+        "access_token": THREADS_ACCESS_TOKEN,
+    }
+    r1 = requests.post(url1, params=params1)
+    r1.raise_for_status()
+    container_id = r1.json()["id"]
+
+    # Step2: 投稿公開
+    url2 = "https://graph.threads.net/v1.0/me/threads_publish"
+    params2 = {
+        "creation_id": container_id,
+        "access_token": THREADS_ACCESS_TOKEN,
+    }
+    r2 = requests.post(url2, params=params2)
+    r2.raise_for_status()
+    post_id = r2.json()["id"]
+    return f"https://www.threads.net/@shushoku.concierge/post/{post_id}"
+
+# ── Slackメッセージ更新 ───────────────────────────────────
 def update_slack_message(channel: str, ts: str, text: str):
     headers = {
         "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
@@ -70,19 +85,28 @@ def slack_actions():
     channel = payload["channel"]["id"]
     message_ts = payload["message"]["ts"]
 
-    if action_id == "post_to_x":
-        try:
-            result = post_to_x(post_text)
-            tweet_id = result["data"]["id"]
-            update_slack_message(
-                channel, message_ts,
-                f"✅ 投稿しました！\nhttps://x.com/Y0shiCareer/status/{tweet_id}\n\n> {post_text}"
-            )
-        except Exception as e:
-            update_slack_message(channel, message_ts, f"❌ 投稿失敗: {str(e)}\n\n> {post_text}")
+    results = []
 
-    elif action_id == "skip_post":
-        update_slack_message(channel, message_ts, f"⏭️ スキップしました\n\n~~{post_text}~~")
+    if action_id in ("post_to_x", "post_to_both"):
+        try:
+            url = post_to_x(post_text)
+            results.append(f"✅ X投稿完了: {url}")
+        except Exception as e:
+            results.append(f"❌ X投稿失敗: {str(e)}")
+
+    if action_id in ("post_to_threads", "post_to_both"):
+        try:
+            url = post_to_threads(post_text)
+            results.append(f"✅ Threads投稿完了: {url}")
+        except Exception as e:
+            results.append(f"❌ Threads投稿失敗: {str(e)}")
+
+    if action_id == "skip_post":
+        update_slack_message(channel, message_ts, f"⏭️ スキップしました\n\n~~{post_text[:50]}...~~")
+        return "", 200
+
+    result_text = "\n".join(results)
+    update_slack_message(channel, message_ts, f"{result_text}\n\n> {post_text[:100]}...")
 
     return "", 200
 
