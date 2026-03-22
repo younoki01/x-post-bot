@@ -8,7 +8,6 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ── 環境変数 ──────────────────────────────────────────────
 SLACK_BOT_TOKEN      = os.environ["SLACK_BOT_TOKEN"]
 SLACK_SIGNING_SECRET = os.environ["SLACK_SIGNING_SECRET"]
 X_API_KEY            = os.environ["X_API_KEY"]
@@ -17,26 +16,22 @@ X_ACCESS_TOKEN       = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET      = os.environ["X_ACCESS_SECRET"]
 THREADS_ACCESS_TOKEN = os.environ["THREADS_ACCESS_TOKEN"]
 
-# ── Threads トピック設定 ──────────────────────────────────
-THREADS_TOPIC = "JOB_SEARCH"  # 転職活動
+THREADS_TOPIC = "JOB_SEARCH"
 
-# ── Slack署名検証 ─────────────────────────────────────────
 def verify_slack_signature(request) -> bool:
-    return True  # 開発中はスキップ
+    return True
 
-# ── X API: 投稿 ───────────────────────────────────────────
 def post_to_x(text: str) -> str:
     from requests_oauthlib import OAuth1
     url = "https://api.twitter.com/2/tweets"
     auth = OAuth1(X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET)
     r = requests.post(url, json={"text": text}, auth=auth)
+    print(f"X API response: {r.status_code} {r.text[:200]}")
     r.raise_for_status()
     tweet_id = r.json()["data"]["id"]
     return f"https://x.com/Y0shiCareer/status/{tweet_id}"
 
-# ── Threads API: 投稿 ─────────────────────────────────────
 def post_to_threads(text: str) -> str:
-    # Step1: メディアコンテナ作成
     url1 = "https://graph.threads.net/v1.0/me/threads"
     params1 = {
         "media_type": "TEXT",
@@ -45,30 +40,30 @@ def post_to_threads(text: str) -> str:
         "access_token": THREADS_ACCESS_TOKEN,
     }
     r1 = requests.post(url1, params=params1)
+    print(f"Threads container response: {r1.status_code} {r1.text[:200]}")
     r1.raise_for_status()
     container_id = r1.json()["id"]
 
-    # Step2: 投稿公開
     url2 = "https://graph.threads.net/v1.0/me/threads_publish"
     params2 = {
         "creation_id": container_id,
         "access_token": THREADS_ACCESS_TOKEN,
     }
     r2 = requests.post(url2, params=params2)
+    print(f"Threads publish response: {r2.status_code} {r2.text[:200]}")
     r2.raise_for_status()
     post_id = r2.json()["id"]
     return f"https://www.threads.net/@shushoku.concierge/post/{post_id}"
 
-# ── Slackメッセージ更新 ───────────────────────────────────
 def update_slack_message(channel: str, ts: str, text: str):
     headers = {
         "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
         "Content-Type": "application/json",
     }
     payload = {"channel": channel, "ts": ts, "text": text}
-    requests.post("https://slack.com/api/chat.update", headers=headers, json=payload)
+    r = requests.post("https://slack.com/api/chat.update", headers=headers, json=payload)
+    print(f"Slack update response: {r.status_code} {r.text[:200]}")
 
-# ── Slackインタラクション受け取り ─────────────────────────
 @app.route("/slack/actions", methods=["POST"])
 def slack_actions():
     if not verify_slack_signature(request):
@@ -84,6 +79,8 @@ def slack_actions():
     post_text = action.get("value", "")
     channel = payload["channel"]["id"]
     message_ts = payload["message"]["ts"]
+
+    print(f"Action: {action_id}, channel: {channel}, ts: {message_ts}")
 
     results = []
 
@@ -110,7 +107,6 @@ def slack_actions():
 
     return "", 200
 
-# ── ヘルスチェック ────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return "OK", 200
