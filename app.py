@@ -16,7 +16,7 @@ X_ACCESS_TOKEN       = os.environ["X_ACCESS_TOKEN"]
 X_ACCESS_SECRET      = os.environ["X_ACCESS_SECRET"]
 THREADS_ACCESS_TOKEN = os.environ["THREADS_ACCESS_TOKEN"]
 
-THREADS_TOPIC = "JOB_SEARCH"
+THREADS_TOPIC = "CAREER"
 
 def verify_slack_signature(request) -> bool:
     return True
