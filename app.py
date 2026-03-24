@@ -37,12 +37,14 @@ def post_to_x(text: str) -> str:
     return tweet_id
 
 def post_to_threads(text: str) -> str:
+    if len(text) > 500:
+        text = text[:497] + "..."
+    
     url1 = "https://graph.threads.net/v1.0/me/threads"
     params1 = {
         "media_type": "TEXT",
         "text": text,
-        "topic_tag": THREADS_TOPIC,
-        "access_token": THREADS_ACCESS_TOKEN,
+        "access_token": THREADS_ACCESS_TOKEN,  # topic_tag を削除
     }
     r1 = requests.post(url1, params=params1)
     print(f"Threads container response: {r1.status_code} {r1.text[:200]}")
