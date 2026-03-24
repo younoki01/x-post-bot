@@ -5,7 +5,6 @@ import hashlib
 import time
 import requests
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -20,7 +19,6 @@ THREADS_ACCESS_TOKEN = os.environ["THREADS_ACCESS_TOKEN"]
 GH_PAT               = os.environ["GH_PAT"]
 GH_REPO              = "younoki01/x-benchmark"
 
-THREADS_TOPIC = "CAREER"
 JST = timezone(timedelta(hours=9))
 
 def verify_slack_signature(request) -> bool:
@@ -33,145 +31,123 @@ def post_to_x(text: str) -> str:
     r = requests.post(url, json={"text": text}, auth=auth)
     print(f"X API response: {r.status_code} {r.text[:200]}")
     r.raise_for_status()
-    tweet_id = r.json()["data"]["id"]
-    return tweet_id
+    return r.json()["data"]["id"]
 
 def post_to_threads(text: str) -> str:
     if len(text) > 500:
         text = text[:497] + "..."
-    
     url1 = "https://graph.threads.net/v1.0/me/threads"
     params1 = {
         "media_type": "TEXT",
         "text": text,
-        "access_token": THREADS_ACCESS_TOKEN,  # topic_tag を削除
-    }
-    r1 = requests.post(url1, params=params1)
-    print(f"Threads container response: {r1.status_code} {r1.text[:200]}")
-    r1.raise_for_status()
-    container_id = r1.json()["id"]
-
-    url2 = "https://graph.threads.net/v1.0/me/threads_publish"
-    params2 = {
-        "creation_id": container_id,
         "access_token": THREADS_ACCESS_TOKEN,
     }
+    r1 = requests.post(url1, params=params1)
+    print(f"Threads container: {r1.status_code} {r1.text[:200]}")
+    r1.raise_for_status()
+    container_id = r1.json()["id"]
+    url2 = "https://graph.threads.net/v1.0/me/threads_publish"
+    params2 = {"creation_id": container_id, "access_token": THREADS_ACCESS_TOKEN}
     r2 = requests.post(url2, params=params2)
-    print(f"Threads publish response: {r2.status_code} {r2.text[:200]}")
+    print(f"Threads publish: {r2.status_code} {r2.text[:200]}")
     r2.raise_for_status()
-    post_id = r2.json()["id"]
-    return post_id
+    return r2.json()["id"]
 
 def update_slack_message(channel: str, ts: str, text: str):
-    headers = {
-        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-        "Content-Type": "application/json",
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+    r = requests.post("https://slack.com/api/chat.update", headers=headers,
+                      json={"channel": channel, "ts": ts, "text": text})
+    print(f"Slack update: {r.status_code} {r.text[:200]}")
+
+def open_edit_modal(trigger_id: str, original_text: str, channel: str, message_ts: str):
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+    modal = {
+        "trigger_id": trigger_id,
+        "view": {
+            "type": "modal",
+            "callback_id": "edit_and_post",
+            "private_metadata": json.dumps({"channel": channel, "message_ts": message_ts}),
+            "title": {"type": "plain_text", "text": "投稿を編集"},
+            "submit": {"type": "plain_text", "text": "投稿する"},
+            "close": {"type": "plain_text", "text": "キャンセル"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "post_text_block",
+                    "label": {"type": "plain_text", "text": "投稿内容"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "post_text_input",
+                        "multiline": True,
+                        "initial_value": original_text,
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "platform_block",
+                    "label": {"type": "plain_text", "text": "投稿先"},
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "platform_select",
+                        "initial_option": {"text": {"type": "plain_text", "text": "X + Threads"}, "value": "both"},
+                        "options": [
+                            {"text": {"type": "plain_text", "text": "X + Threads"}, "value": "both"},
+                            {"text": {"type": "plain_text", "text": "X のみ"}, "value": "x"},
+                            {"text": {"type": "plain_text", "text": "Threads のみ"}, "value": "threads"},
+                        ]
+                    }
+                }
+            ]
+        }
     }
-    payload = {"channel": channel, "ts": ts, "text": text}
-    r = requests.post("https://slack.com/api/chat.update", headers=headers, json=payload)
-    print(f"Slack update response: {r.status_code} {r.text[:200]}")
-
-def save_to_github(filepath: str, content: dict, message: str):
-    """GitHubリポジトリにJSONを保存"""
-    url = f"https://api.github.com/repos/{GH_REPO}/contents/{filepath}"
-    headers = {
-        "Authorization": f"Bearer {GH_PAT}",
-        "Content-Type": "application/json",
-    }
-    # 既存ファイルのSHAを取得
-    r = requests.get(url, headers=headers)
-    sha = r.json().get("sha") if r.status_code == 200 else None
-
-    import base64
-    encoded = base64.b64encode(json.dumps(content, ensure_ascii=False, indent=2).encode()).decode()
-
-    payload = {"message": message, "content": encoded}
-    if sha:
-        payload["sha"] = sha
-
-    r = requests.put(url, headers=headers, json=payload)
-    print(f"GitHub save response: {r.status_code}")
+    r = requests.post("https://slack.com/api/views.open", headers=headers, json=modal)
+    print(f"Modal open: {r.status_code} {r.text[:200]}")
 
 def load_from_github(filepath: str) -> dict:
-    """GitHubリポジトリからJSONを読み込み"""
     url = f"https://api.github.com/repos/{GH_REPO}/contents/{filepath}"
     headers = {"Authorization": f"Bearer {GH_PAT}"}
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
         return {}
     import base64
-    content = base64.b64decode(r.json()["content"]).decode()
-    return json.loads(content)
+    return json.loads(base64.b64decode(r.json()["content"]).decode())
 
-@app.route("/slack/actions", methods=["POST"])
-def slack_actions():
-    if not verify_slack_signature(request):
-        return jsonify({"error": "Invalid signature"}), 403
+def save_to_github(filepath: str, content: dict, message: str):
+    url = f"https://api.github.com/repos/{GH_REPO}/contents/{filepath}"
+    headers = {"Authorization": f"Bearer {GH_PAT}", "Content-Type": "application/json"}
+    r = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.status_code == 200 else None
+    import base64
+    encoded = base64.b64encode(json.dumps(content, ensure_ascii=False, indent=2).encode()).decode()
+    payload = {"message": message, "content": encoded}
+    if sha:
+        payload["sha"] = sha
+    r = requests.put(url, headers=headers, json=payload)
+    print(f"GitHub save: {r.status_code} {filepath}")
 
-    payload = json.loads(request.form.get("payload", "{}"))
-    actions = payload.get("actions", [])
-    if not actions:
-        return "", 200
-
-    action = actions[0]
-    action_id = action.get("action_id", "")
-    post_text = action.get("value", "")
-    channel = payload["channel"]["id"]
-    message_ts = payload["message"]["ts"]
-
-    print(f"Action: {action_id}")
-
-    # ── スキップ理由の記録 ────────────────────────────────
-    skip_reasons = {
-        "skip_theme":   "テーマが違う",
-        "skip_style":   "文体が合わない",
-        "skip_thin":    "内容が薄い",
-        "skip_timing":  "タイミングが違う",
-    }
-
-    if action_id in skip_reasons:
-        reason = skip_reasons[action_id]
-        feedback = load_from_github("data/feedback.json")
-        if "skipped" not in feedback:
-            feedback["skipped"] = []
-        feedback["skipped"].append({
-            "text": post_text,
-            "reason": reason,
-            "skipped_at": datetime.now(JST).isoformat(),
-            "score": "low" if action_id != "skip_timing" else "neutral",
-        })
-        save_to_github("data/feedback.json", feedback, f"feedback: skip - {reason}")
-        update_slack_message(channel, message_ts, f"⏭️ スキップ（{reason}）\n\n~~{post_text[:50]}...~~")
-        return "", 200
-
+def do_post(action_id: str, post_text: str) -> list:
     results = []
     posted_log = load_from_github("data/posted_log.json")
     if "posts" not in posted_log:
         posted_log["posts"] = []
 
-    if action_id in ("post_to_x", "post_to_both"):
+    if action_id in ("post_to_x", "post_to_both", "x"):
         try:
             tweet_id = post_to_x(post_text)
-            url = f"https://x.com/Y0shiCareer/status/{tweet_id}"
-            results.append(f"✅ X投稿完了: {url}")
+            results.append(f"✅ X投稿完了: https://x.com/Y0shiCareer/status/{tweet_id}")
             posted_log["posts"].append({
-                "text": post_text,
-                "platform": "x",
-                "post_id": tweet_id,
+                "text": post_text, "platform": "x", "post_id": tweet_id,
                 "posted_at": datetime.now(JST).isoformat(),
             })
         except Exception as e:
             results.append(f"❌ X投稿失敗: {str(e)}")
 
-    if action_id in ("post_to_threads", "post_to_both"):
+    if action_id in ("post_to_threads", "post_to_both", "threads"):
         try:
             post_id = post_to_threads(post_text)
-            url = f"https://www.threads.net/@shushoku.concierge/post/{post_id}"
-            results.append(f"✅ Threads投稿完了: {url}")
+            results.append(f"✅ Threads投稿完了: https://www.threads.net/@shushoku.concierge/post/{post_id}")
             posted_log["posts"].append({
-                "text": post_text,
-                "platform": "threads",
-                "post_id": post_id,
+                "text": post_text, "platform": "threads", "post_id": post_id,
                 "posted_at": datetime.now(JST).isoformat(),
             })
         except Exception as e:
@@ -180,8 +156,78 @@ def slack_actions():
     if posted_log["posts"]:
         save_to_github("data/posted_log.json", posted_log, "log: add posted entry")
 
-    result_text = "\n".join(results)
-    update_slack_message(channel, message_ts, f"{result_text}\n\n> {post_text[:100]}...")
+    return results
+
+@app.route("/slack/actions", methods=["POST"])
+def slack_actions():
+    if not verify_slack_signature(request):
+        return jsonify({"error": "Invalid signature"}), 403
+
+    payload = json.loads(request.form.get("payload", "{}"))
+    payload_type = payload.get("type")
+
+    # ── モーダル送信 ──────────────────────────────────────
+    if payload_type == "view_submission":
+        callback_id = payload["view"]["callback_id"]
+        if callback_id == "edit_and_post":
+            values = payload["view"]["state"]["values"]
+            post_text = values["post_text_block"]["post_text_input"]["value"]
+            platform  = values["platform_block"]["platform_select"]["selected_option"]["value"]
+            meta = json.loads(payload["view"]["private_metadata"])
+            channel    = meta["channel"]
+            message_ts = meta["message_ts"]
+
+            results = do_post(platform, post_text)
+            result_text = "\n".join(results)
+            update_slack_message(channel, message_ts, f"{result_text}\n\n> {post_text[:100]}...")
+            return jsonify({"response_action": "clear"})
+
+    # ── ボタン操作 ────────────────────────────────────────
+    actions = payload.get("actions", [])
+    if not actions:
+        return "", 200
+
+    action    = actions[0]
+    action_id = action.get("action_id", "")
+    post_text = action.get("value", "")
+    channel   = payload["channel"]["id"]
+    message_ts = payload["message"]["ts"]
+
+    print(f"Action: {action_id}")
+
+    # スキップ理由
+    skip_reasons = {
+        "skip_theme":   ("テーマが違う", "low"),
+        "skip_style":   ("文体が合わない", "low"),
+        "skip_thin":    ("内容が薄い", "low"),
+        "skip_fact":    ("事実が違う", "low"),
+        "skip_timing":  ("タイミングが違う", "neutral"),
+    }
+
+    if action_id in skip_reasons:
+        reason, score = skip_reasons[action_id]
+        feedback = load_from_github("data/feedback.json")
+        if "skipped" not in feedback:
+            feedback["skipped"] = []
+        feedback["skipped"].append({
+            "text": post_text, "reason": reason,
+            "skipped_at": datetime.now(JST).isoformat(), "score": score,
+        })
+        save_to_github("data/feedback.json", feedback, f"feedback: skip - {reason}")
+        update_slack_message(channel, message_ts, f"⏭️ スキップ（{reason}）\n\n~~{post_text[:50]}...~~")
+        return "", 200
+
+    # 編集して投稿
+    if action_id == "edit_and_post":
+        trigger_id = payload.get("trigger_id")
+        open_edit_modal(trigger_id, post_text, channel, message_ts)
+        return "", 200
+
+    # 通常投稿
+    if action_id in ("post_to_x", "post_to_both", "post_to_threads"):
+        results = do_post(action_id, post_text)
+        result_text = "\n".join(results)
+        update_slack_message(channel, message_ts, f"{result_text}\n\n> {post_text[:100]}...")
 
     return "", 200
 
