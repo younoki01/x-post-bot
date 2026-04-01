@@ -34,6 +34,7 @@ def post_to_x(text: str) -> str:
     return r.json()["data"]["id"]
 
 def post_to_threads(text: str) -> str:
+    text = text + "\n\n#転職活動"
     if len(text) > 500:
         text = text[:497] + "..."
     url1 = "https://graph.threads.net/v1.0/me/threads"
